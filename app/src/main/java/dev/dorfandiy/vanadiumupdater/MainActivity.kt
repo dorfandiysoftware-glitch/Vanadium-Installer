@@ -166,9 +166,9 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setExpressive(v: Boolean) { getApplication<Application>().expressive = v; expressive = v }
-    fun setNotify(v: Boolean) { val c = getApplication<Application>(); c.notifyUpdates = v; notify = v; CheckWorker.schedule(c, v, hours) }
-    fun setHours(h: Int) { val c = getApplication<Application>(); c.checkHours = h; hours = h; if (notify) CheckWorker.schedule(c, true, h) }
+    fun changeExpressive(v: Boolean) { getApplication<Application>().expressive = v; expressive = v }
+    fun changeNotify(v: Boolean) { val c = getApplication<Application>(); c.notifyUpdates = v; notify = v; CheckWorker.schedule(c, v, hours) }
+    fun changeHours(h: Int) { val c = getApplication<Application>(); c.checkHours = h; hours = h; if (notify) CheckWorker.schedule(c, true, h) }
 }
 
 class MainActivity : ComponentActivity() {
@@ -325,7 +325,7 @@ private fun SettingsScreen(vm: VM, back: () -> Unit) {
     val shizuku by ShizukuHelper.status.collectAsState()
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     fun toggleNotify(v: Boolean) {
-        vm.setNotify(v)
+        vm.changeNotify(v)
         if (v && Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
@@ -348,7 +348,7 @@ private fun SettingsScreen(vm: VM, back: () -> Unit) {
                         if (vm.notify) {
                             Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf(6 to "6 h", 12 to "12 h", 24 to "Daily", 168 to "Weekly").forEach { (h, n) ->
-                                    FilterChip(vm.hours == h, { vm.setHours(h) }, label = { Text(n) })
+                                    FilterChip(vm.hours == h, { vm.changeHours(h) }, label = { Text(n) })
                                 }
                             }
                             Text("Android may delay background checks to save battery.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -357,7 +357,7 @@ private fun SettingsScreen(vm: VM, back: () -> Unit) {
                     }
                 }
                 item {
-                    Panel { SwitchRow("Material 3 Expressive", "Wavy progress, bigger shapes and springy motion. Off gives the standard Material 3 look.", vm.expressive) { vm.setExpressive(it) } }
+                    Panel { SwitchRow("Material 3 Expressive", "Wavy progress, bigger shapes and springy motion. Off gives the standard Material 3 look.", vm.expressive) { vm.changeExpressive(it) } }
                 }
                 item {
                     Panel {
