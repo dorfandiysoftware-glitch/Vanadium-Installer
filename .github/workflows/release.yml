@@ -1,0 +1,27 @@
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag, e.g. v0.1.0"
+        required: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - run: chmod +x ./gradlew && ./gradlew :app:assembleDebug --stacktrace
+      - run: cp app/build/outputs/apk/debug/app-debug.apk "Vanadium-Updater-${{ github.event.inputs.version }}.apk"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Vanadium Updater ${{ github.event.inputs.version }}
+          prerelease: true
+          files: Vanadium-Updater-*.apk
