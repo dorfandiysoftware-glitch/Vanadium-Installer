@@ -34,7 +34,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -75,6 +77,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.dorfandiy.vanadiumupdater.Vanadium.checkHours
 import dev.dorfandiy.vanadiumupdater.Vanadium.expressive
+import dev.dorfandiy.vanadiumupdater.Vanadium.installMode
 import dev.dorfandiy.vanadiumupdater.Vanadium.notifyUpdates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -96,6 +99,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     var expressive by mutableStateOf(app.expressive); private set
     var notify by mutableStateOf(app.notifyUpdates); private set
     var hours by mutableStateOf(app.checkHours); private set
+    var mode by mutableStateOf(app.installMode); private set
 
     init { refresh() }
 
@@ -103,6 +107,7 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     fun refreshLocal() {
         val ctx = getApplication<Application>()
+        Vanadium.syncPending(ctx)
         Comp.entries.forEach { c -> put(c) { Item(Vanadium.installedVersion(ctx, c.pkg), it.remote, Vanadium.storedCommit(ctx, c), it.progress, it.busy) } }
     }
 
@@ -142,7 +147,7 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     fun uninstall(c: Comp) {
         val ctx = getApplication<Application>()
-        if (ShizukuHelper.usable) {
+        if (mode == "shizuku" && ShizukuHelper.usable) {
             viewModelScope.launch(Dispatchers.IO) {
                 val out = ShizukuHelper.exec("pm uninstall ${c.pkg}")
                 Bus.message.value = if (out != null && out.startsWith("Success")) "${c.title} removed" else out ?: "Failed"
@@ -166,6 +171,7 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun changeMode(m: String) { getApplication<Application>().installMode = m; mode = m }
     fun changeExpressive(v: Boolean) { getApplication<Application>().expressive = v; expressive = v }
     fun changeNotify(v: Boolean) { val c = getApplication<Application>(); c.notifyUpdates = v; notify = v; CheckWorker.schedule(c, v, hours) }
     fun changeHours(h: Int) { val c = getApplication<Application>(); c.checkHours = h; hours = h; if (notify) CheckWorker.schedule(c, true, h) }
@@ -226,13 +232,30 @@ private fun Screen(vm: VM, openSettings: () -> Unit) {
         onDispose { owner.lifecycle.removeObserver(o) }
     }
 
-    fun run(c: Comp) {
-        if (!ShizukuHelper.usable && !ctx.packageManager.canRequestPackageInstalls()) {
+    var confirmInstallWv by remember { mutableStateOf(false) }
+    var confirmSetWv by remember { mutableStateOf(false) }
+    fun run(c: Comp, confirmed: Boolean = false) {
+        if (c == Comp.WEBVIEW && !confirmed) { confirmInstallWv = true; return }
+        if (vm.mode == "android" && !ctx.packageManager.canRequestPackageInstalls()) {
             ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))
             Bus.message.value = "Allow installs from this app, then tap again"
         } else vm.act(c)
     }
 
+    if (confirmInstallWv) AlertDialog(
+        onDismissRequest = { confirmInstallWv = false },
+        title = { Text("Install Vanadium WebView?") },
+        text = { Text("This only adds the package. Your phone keeps using its current WebView (${currentWebView()}) unless Android is told to switch, " +
+            "and this app never switches it on its own.") },
+        confirmButton = { Button(onClick = { confirmInstallWv = false; run(Comp.WEBVIEW, true) }) { Text("Install") } },
+        dismissButton = { TextButton(onClick = { confirmInstallWv = false }) { Text("Cancel") } })
+    if (confirmSetWv) AlertDialog(
+        onDismissRequest = { confirmSetWv = false },
+        title = { Text("Switch the system WebView?") },
+        text = { Text("If Android accepts, every app that shows web content will use Vanadium WebView. Many apps depend on it, and this is your main phone. " +
+            "You can switch back in Developer options → WebView implementation. Continue only if you are sure.") },
+        confirmButton = { Button(onClick = { confirmSetWv = false; vm.activateWebView() }) { Text("Switch") } },
+        dismissButton = { TextButton(onClick = { confirmSetWv = false }) { Text("Cancel") } })
     Scaffold(containerColor = MaterialTheme.colorScheme.surface, snackbarHost = { SnackbarHost(snack) }) { pad ->
         Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.TopCenter) {
             LazyColumn(
@@ -257,7 +280,7 @@ private fun Screen(vm: VM, openSettings: () -> Unit) {
                 }
                 vm.error?.let { e -> item { Note(e) } }
                 Comp.entries.forEach { c ->
-                    item { CompCard(c, vm.items.getValue(c), shizuku == ShizukuStatus.READY, onRun = { run(c) }, onRemove = { vm.uninstall(c) }, onActivate = { vm.activateWebView() }) }
+                    item { CompCard(c, vm.items.getValue(c), shizuku == ShizukuStatus.READY, onRun = { run(c) }, onRemove = { vm.uninstall(c) }, onActivate = { confirmSetWv = true }) }
                 }
                 item { WebViewInfo() }
                 item {
@@ -304,6 +327,11 @@ private fun CompCard(c: Comp, it: Item, shizuku: Boolean, onRun: () -> Unit, onR
             }
         }
     }
+}
+
+private fun currentWebView(): String {
+    val cur = runCatching { WebView.getCurrentWebViewPackage() }.getOrNull()
+    return cur?.packageName ?: "unknown"
 }
 
 @Composable
@@ -360,10 +388,25 @@ private fun SettingsScreen(vm: VM, back: () -> Unit) {
                     Panel { SwitchRow("Material 3 Expressive", "Wavy progress, bigger shapes and springy motion. Off gives the standard Material 3 look.", vm.expressive) { vm.changeExpressive(it) } }
                 }
                 item {
+                    val apps = remember { Vanadium.installerApps(ctx) }
+                    Panel {
+                        Text("Installer", style = MaterialTheme.typography.titleMedium)
+                        Text("Who installs and updates the APKs. Nothing else is used behind your back.", fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 6.dp))
+                        ModeRow("Android installer", "Default. Shows the system confirmation.", vm.mode == "android", true) { vm.changeMode("android") }
+                        ModeRow("Shizuku", if (shizuku == ShizukuStatus.READY) "Silent installs and removals." else "Shizuku must be running and allowed.",
+                            vm.mode == "shizuku", shizuku == ShizukuStatus.READY) { vm.changeMode("shizuku") }
+                        apps.forEach { (pkg, label) ->
+                            ModeRow(label, pkg, vm.mode == "pkg:$pkg", true) { vm.changeMode("pkg:$pkg") }
+                        }
+                        if (apps.isEmpty()) Text("No other installer apps found.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                item {
                     Panel {
                         Text("Shizuku", style = MaterialTheme.typography.titleMedium)
                         Text(when (shizuku) {
-                            ShizukuStatus.READY -> "Connected. Installs and removals happen without dialogs."
+                            ShizukuStatus.READY -> "Connected. Only used if you choose it as the installer above, or for the WebView switch you confirm."
                             ShizukuStatus.NO_PERMISSION -> "Running, but this app has no permission yet."
                             ShizukuStatus.NOT_RUNNING -> "Not running. Start Shizuku to install silently."
                         }, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
@@ -372,6 +415,14 @@ private fun SettingsScreen(vm: VM, back: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ModeRow(title: String, sub: String, selected: Boolean, enabled: Boolean, onPick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled = enabled) { onPick() }, verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected, onPick, enabled = enabled)
+        Column { Text(title); Text(sub, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 

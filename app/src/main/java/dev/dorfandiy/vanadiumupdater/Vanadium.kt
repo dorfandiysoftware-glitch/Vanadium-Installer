@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.net.Uri
 import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
@@ -77,7 +78,9 @@ object Vanadium {
     }
 
     fun install(ctx: Context, c: Comp, r: Remote, file: File) {
-        if (ShizukuHelper.usable) {
+        val mode = ctx.installMode
+        if (mode.startsWith("pkg:")) { handOff(ctx, c, r, file, mode.removePrefix("pkg:")); return }
+        if (mode == "shizuku" && ShizukuHelper.usable) {
             val err = ShizukuHelper.install(file)
             if (err == null) {
                 storeCommit(ctx, c, r.commit)
@@ -102,6 +105,34 @@ object Vanadium {
         }
     }
 
+    /** Gives the APK to another installer app (InstallerX, etc.). The result is picked up when the package changes. */
+    private fun handOff(ctx: Context, c: Comp, r: Remote, file: File, installer: String) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", file)
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+            .setPackage(installer).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        sp(ctx).edit().putString("pending_${c.id}", r.commit).putLong("pendingAt_${c.id}", System.currentTimeMillis()).apply()
+        try { ctx.startActivity(i); Bus.message.value = "Opened in the chosen installer" }
+        catch (e: Exception) { Bus.message.value = "Could not open that installer: ${e.message}" }
+    }
+
+    /** Records installs finished by an external installer. */
+    fun syncPending(ctx: Context) {
+        Comp.entries.forEach { c ->
+            val commit = sp(ctx).getString("pending_${c.id}", null) ?: return@forEach
+            val at = sp(ctx).getLong("pendingAt_${c.id}", 0)
+            val t = try { ctx.packageManager.getPackageInfo(c.pkg, 0).lastUpdateTime } catch (_: Exception) { return@forEach }
+            if (t >= at) { storeCommit(ctx, c, commit); sp(ctx).edit().remove("pending_${c.id}").apply() }
+        }
+    }
+
+    /** Installed apps that can open an APK, as package to label pairs. */
+    fun installerApps(ctx: Context): List<Pair<String, String>> {
+        val pm = ctx.packageManager
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse("content://x/a.apk"), "application/vnd.android.package-archive")
+        return pm.queryIntentActivities(i, 0).map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .filter { it.first != ctx.packageName }.distinctBy { it.first }.sortedBy { it.second.lowercase() }
+    }
+
     fun installedVersion(ctx: Context, pkg: String): String? = try {
         ctx.packageManager.getPackageInfo(pkg, 0).versionName ?: "?"
     } catch (_: Exception) { null }
@@ -112,6 +143,10 @@ object Vanadium {
     var Context.notifyUpdates: Boolean
         get() = sp(this).getBoolean("notify", false)
         set(v) = sp(this).edit().putBoolean("notify", v).apply()
+    /** "android" (default), "shizuku", or "pkg:<package>" for another installer app. */
+    var Context.installMode: String
+        get() = sp(this).getString("installer", "android") ?: "android"
+        set(v) = sp(this).edit().putString("installer", v).apply()
     var Context.checkHours: Int
         get() = sp(this).getInt("hours", 24)
         set(v) = sp(this).edit().putInt("hours", v).apply()
