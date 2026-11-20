@@ -10,10 +10,12 @@ import android.os.Bundle
 import android.provider.Settings
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,25 +28,30 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -56,15 +63,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.dorfandiy.vanadiumupdater.Vanadium.checkHours
+import dev.dorfandiy.vanadiumupdater.Vanadium.expressive
 import dev.dorfandiy.vanadiumupdater.Vanadium.notifyUpdates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -83,6 +93,9 @@ class VM(app: Application) : AndroidViewModel(app) {
         private set
     var checking by mutableStateOf(false); private set
     var error by mutableStateOf<String?>(null); private set
+    var expressive by mutableStateOf(app.expressive); private set
+    var notify by mutableStateOf(app.notifyUpdates); private set
+    var hours by mutableStateOf(app.checkHours); private set
 
     init { refresh() }
 
@@ -127,40 +140,94 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setNotify(v: Boolean) {
+    fun uninstall(c: Comp) {
         val ctx = getApplication<Application>()
-        ctx.notifyUpdates = v; CheckWorker.schedule(ctx, v)
+        if (ShizukuHelper.usable) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val out = ShizukuHelper.exec("pm uninstall ${c.pkg}")
+                Bus.message.value = if (out != null && out.startsWith("Success")) "${c.title} removed" else out ?: "Failed"
+                Bus.tick.value++
+            }
+        } else {
+            val i = Intent(Intent.ACTION_DELETE, Uri.parse("package:${c.pkg}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { ctx.startActivity(i) }.onFailure { Bus.message.value = it.message }
+        }
     }
+
+    /** Asks Android to use Vanadium WebView. This only works if the system lists it as an allowed provider. */
+    fun activateWebView() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val out = ShizukuHelper.exec("cmd webviewupdate set-webview-implementation ${Comp.WEBVIEW.pkg}")
+            Bus.message.value = when {
+                out == null -> "Shizuku is not connected"
+                out.startsWith("ERR") || out.contains("Failed", true) -> "Android refused: ${out.take(160)}"
+                else -> out.ifBlank { "Done. Check Developer options → WebView implementation." }
+            }
+        }
+    }
+
+    fun setExpressive(v: Boolean) { getApplication<Application>().expressive = v; expressive = v }
+    fun setNotify(v: Boolean) { val c = getApplication<Application>(); c.notifyUpdates = v; notify = v; CheckWorker.schedule(c, v, hours) }
+    fun setHours(h: Int) { val c = getApplication<Application>(); c.checkHours = h; hours = h; if (notify) CheckWorker.schedule(c, true, h) }
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { AppTheme { Screen() } }
+        ShizukuHelper.init()
+        setContent {
+            val vm: VM = viewModel()
+            AppTheme(vm.expressive) { Root(vm) }
+        }
+    }
+}
+
+@Composable
+private fun cardShape(): RoundedCornerShape = RoundedCornerShape(if (LocalExpressive.current) 28.dp else 16.dp)
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun Bar(p: Float?, modifier: Modifier = Modifier) {
+    val ex = LocalExpressive.current
+    if (ex) {
+        if (p != null) LinearWavyProgressIndicator(progress = { p }, modifier = modifier) else LinearWavyProgressIndicator(modifier)
+    } else {
+        if (p != null) LinearProgressIndicator(progress = { p }, modifier = modifier) else LinearProgressIndicator(modifier)
     }
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun Screen(vm: VM = viewModel()) {
+private fun Spinner() {
+    if (LocalExpressive.current) LoadingIndicator(Modifier.size(48.dp)) else CircularProgressIndicator(Modifier.size(36.dp))
+}
+
+@Composable
+private fun Root(vm: VM) {
+    var settings by remember { mutableStateOf(false) }
+    BackHandler(settings) { settings = false }
+    if (settings) SettingsScreen(vm) { settings = false } else Screen(vm) { settings = true }
+}
+
+@Composable
+private fun Screen(vm: VM, openSettings: () -> Unit) {
     val ctx = LocalContext.current
     val snack = remember { SnackbarHostState() }
     val tick by Bus.tick.collectAsState()
     val msg by Bus.message.collectAsState()
+    val shizuku by ShizukuHelper.status.collectAsState()
     LaunchedEffect(tick) { vm.refreshLocal() }
     LaunchedEffect(msg) { msg?.let { snack.showSnackbar(it); Bus.message.value = null } }
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
-        val o = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) vm.refreshLocal() }
+        val o = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) { vm.refreshLocal(); ShizukuHelper.refresh() } }
         owner.lifecycle.addObserver(o)
         onDispose { owner.lifecycle.removeObserver(o) }
     }
-    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    var notify by remember { mutableStateOf(ctx.notifyUpdates) }
 
     fun run(c: Comp) {
-        if (!ctx.packageManager.canRequestPackageInstalls()) {
+        if (!ShizukuHelper.usable && !ctx.packageManager.canRequestPackageInstalls()) {
             ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))
             Bus.message.value = "Allow installs from this app, then tap again"
         } else vm.act(c)
@@ -174,42 +241,27 @@ private fun Screen(vm: VM = viewModel()) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 item {
-                    Surface(shape = RoundedCornerShape(32.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                    Surface(shape = cardShape(), color = MaterialTheme.colorScheme.primaryContainer) {
                         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("Vanadium Updater", fontSize = 26.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                                Text("No root needed", fontSize = 13.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text("Vanadium Updater", fontSize = 24.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text(if (shizuku == ShizukuStatus.READY) "No root · Shizuku active" else "No root", fontSize = 13.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
-                            if (vm.checking) LoadingIndicator(Modifier.size(48.dp))
+                            if (vm.checking) Spinner()
                             else FilledTonalButton(onClick = { vm.refresh() }) {
                                 Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text("Check")
                             }
+                            IconButton(onClick = openSettings) { Icon(Icons.Rounded.Settings, "Settings", tint = MaterialTheme.colorScheme.onPrimaryContainer) }
                         }
                     }
                 }
                 vm.error?.let { e -> item { Note(e) } }
                 Comp.entries.forEach { c ->
-                    item { CompCard(c, vm.items.getValue(c), onRun = { run(c) }) }
+                    item { CompCard(c, vm.items.getValue(c), shizuku == ShizukuStatus.READY, onRun = { run(c) }, onRemove = { vm.uninstall(c) }, onActivate = { vm.activateWebView() }) }
                 }
-                item { WebViewCard() }
+                item { WebViewInfo() }
                 item {
-                    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-                        Row(Modifier.fillMaxWidth().clickable {
-                            notify = !notify; vm.setNotify(notify)
-                            if (notify && Build.VERSION.SDK_INT >= 33 &&
-                                ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-                                notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Notify about updates", style = MaterialTheme.typography.titleMedium)
-                                Text("Checks once a day", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            Switch(notify, { notify = it; vm.setNotify(it) })
-                        }
-                    }
-                }
-                item {
-                    Text("Files come straight from GrapheneOS's Vanadium repository on GitLab and are installed over Android's own installer, " +
+                    Text("Files come straight from GrapheneOS's Vanadium repository on GitLab. Without Shizuku they are installed with Android's installer, " +
                         "which checks the signature. Vanadium is not officially supported outside GrapheneOS.",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp))
                 }
@@ -220,16 +272,16 @@ private fun Screen(vm: VM = viewModel()) {
 
 @Composable
 private fun Note(text: String) {
-    Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+    Surface(shape = cardShape(), color = MaterialTheme.colorScheme.secondaryContainer) {
         Text(text, Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.onSecondaryContainer)
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun CompCard(c: Comp, it: Item, onRun: () -> Unit) {
+private fun CompCard(c: Comp, it: Item, shizuku: Boolean, onRun: () -> Unit, onRemove: () -> Unit, onActivate: () -> Unit) {
     val ctx = LocalContext.current
-    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+    val launch = remember(it.installed) { ctx.packageManager.getLaunchIntentForPackage(c.pkg) }
+    Surface(shape = cardShape(), color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(c.title, style = MaterialTheme.typography.titleLarge)
             Text(c.info, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -239,20 +291,84 @@ private fun CompCard(c: Comp, it: Item, onRun: () -> Unit) {
                     fontSize = 13.sp, color = if (it.outdated) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = if (it.outdated) FontWeight.Bold else FontWeight.Normal)
             }
-            if (it.busy != null) {
-                Text(it.busy, fontSize = 13.sp)
-                if (it.progress != null) LinearWavyProgressIndicator(progress = { it.progress }, modifier = Modifier.fillMaxWidth())
-                else LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-            }
+            if (it.busy != null) { Text(it.busy, fontSize = 13.sp); Bar(it.progress, Modifier.fillMaxWidth()) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = onRun, enabled = it.busy == null && (it.remote != null)) { Text(it.label) }
-                if (it.installed != null) {
-                    TextButton(onClick = {
-                        ctx.packageManager.getLaunchIntentForPackage(c.pkg)?.let { i -> ctx.startActivity(i) }
-                    }) { Text("Open") }
-                    TextButton(onClick = {
-                        ctx.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${c.pkg}")))
-                    }) { Text("Uninstall") }
+                Button(onClick = onRun, enabled = it.busy == null && it.remote != null) { Text(it.label) }
+                if (launch != null) TextButton(onClick = { runCatching { ctx.startActivity(launch) } }) { Text("Open") }
+                if (it.installed != null) TextButton(onClick = onRemove) { Text("Uninstall") }
+            }
+            if (c == Comp.WEBVIEW && it.installed != null) {
+                TextButton(onClick = onActivate, enabled = shizuku) { Text("Try to set as system WebView") }
+                if (!shizuku) Text("Needs Shizuku. Otherwise choose it in Developer options → WebView implementation if Android lists it.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WebViewInfo() {
+    val cur = remember { runCatching { WebView.getCurrentWebViewPackage() }.getOrNull() }
+    Surface(shape = cardShape(), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Active system WebView", style = MaterialTheme.typography.titleMedium)
+            Text("${cur?.packageName ?: "unknown"} ${cur?.versionName ?: ""}".trim(), fontWeight = FontWeight.Medium)
+            Text("Stock Android only lists WebView providers named in the system image, so Vanadium WebView may not be selectable without a root module. " +
+                "Installing it is harmless either way.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(vm: VM, back: () -> Unit) {
+    val ctx = LocalContext.current
+    val shizuku by ShizukuHelper.status.collectAsState()
+    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    fun toggleNotify(v: Boolean) {
+        vm.setNotify(v)
+        if (v && Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    Scaffold(containerColor = MaterialTheme.colorScheme.surface) { pad ->
+        Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.TopCenter) {
+            LazyColumn(
+                Modifier.widthIn(max = 700.dp).fillMaxSize(),
+                contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 32.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                item {
+                    Row(Modifier.statusBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
+                        Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    }
+                }
+                item {
+                    Panel {
+                        SwitchRow("Check for updates automatically", "Sends a notification when a new build appears", vm.notify) { toggleNotify(it) }
+                        if (vm.notify) {
+                            Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(6 to "6 h", 12 to "12 h", 24 to "Daily", 168 to "Weekly").forEach { (h, n) ->
+                                    FilterChip(vm.hours == h, { vm.setHours(h) }, label = { Text(n) })
+                                }
+                            }
+                            Text("Android may delay background checks to save battery.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 6.dp))
+                        }
+                    }
+                }
+                item {
+                    Panel { SwitchRow("Material 3 Expressive", "Wavy progress, bigger shapes and springy motion. Off gives the standard Material 3 look.", vm.expressive) { vm.setExpressive(it) } }
+                }
+                item {
+                    Panel {
+                        Text("Shizuku", style = MaterialTheme.typography.titleMedium)
+                        Text(when (shizuku) {
+                            ShizukuStatus.READY -> "Connected. Installs and removals happen without dialogs."
+                            ShizukuStatus.NO_PERMISSION -> "Running, but this app has no permission yet."
+                            ShizukuStatus.NOT_RUNNING -> "Not running. Start Shizuku to install silently."
+                        }, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+                        if (shizuku == ShizukuStatus.NO_PERMISSION) Button(onClick = { ShizukuHelper.requestPermission() }, modifier = Modifier.padding(top = 8.dp)) { Text("Grant permission") }
+                    }
                 }
             }
         }
@@ -260,21 +376,19 @@ private fun CompCard(c: Comp, it: Item, onRun: () -> Unit) {
 }
 
 @Composable
-private fun WebViewCard() {
-    val ctx = LocalContext.current
-    val cur = remember { runCatching { WebView.getCurrentWebViewPackage() }.getOrNull() }
-    val has = Vanadium.installedVersion(ctx, "app.vanadium.webview")
-    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Vanadium WebView", style = MaterialTheme.typography.titleLarge)
-            Text("Active WebView: ${cur?.packageName ?: "unknown"} ${cur?.versionName ?: ""}".trim(), fontWeight = FontWeight.Medium)
-            if (has != null) Text("Vanadium WebView is installed ($has).", fontSize = 13.sp)
-            Text("Android only lets root modules register a custom WebView, so it cannot be installed from here without root. " +
-                "If you get root later, use a Magisk/KernelSU module for it; the Browser and Config above work either way.",
-                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(onClick = {
-                ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/hddq/magisk-vanadium-webview")))
-            }) { Text("Root module (GitHub)") }
+private fun Panel(content: @Composable () -> Unit) {
+    Surface(shape = cardShape(), color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(Modifier.fillMaxWidth().padding(20.dp)) { content() }
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onChange(!on) }, verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(sub, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        Switch(on, onChange)
     }
 }

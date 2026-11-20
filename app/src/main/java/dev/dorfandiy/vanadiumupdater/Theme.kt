@@ -6,7 +6,10 @@ import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 private val GreyDark = darkColorScheme(
@@ -30,10 +33,12 @@ private val GreyLight = lightColorScheme(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
-    MaterialExpressiveTheme(
-        colorScheme = if (isSystemInDarkTheme()) GreyDark else GreyLight,
-        motionScheme = MotionScheme.expressive(),
-        content = content,
-    )
+fun AppTheme(expressive: Boolean, content: @Composable () -> Unit) {
+    val scheme = if (isSystemInDarkTheme()) GreyDark else GreyLight
+    CompositionLocalProvider(LocalExpressive provides expressive) {
+        if (expressive) MaterialExpressiveTheme(colorScheme = scheme, motionScheme = MotionScheme.expressive(), content = content)
+        else MaterialTheme(colorScheme = scheme, content = content)
+    }
 }
+
+val LocalExpressive = staticCompositionLocalOf { true }

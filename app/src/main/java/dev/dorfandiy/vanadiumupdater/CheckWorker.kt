@@ -34,11 +34,11 @@ class CheckWorker(ctx: Context, p: WorkerParameters) : Worker(ctx, p) {
     }
 
     companion object {
-        fun schedule(ctx: Context, on: Boolean) {
+        fun schedule(ctx: Context, on: Boolean, hours: Int = 24) {
             val wm = WorkManager.getInstance(ctx)
             if (!on) { wm.cancelUniqueWork("check"); return }
-            wm.enqueueUniquePeriodicWork("check", ExistingPeriodicWorkPolicy.KEEP,
-                PeriodicWorkRequestBuilder<CheckWorker>(24, TimeUnit.HOURS)
+            wm.enqueueUniquePeriodicWork("check", ExistingPeriodicWorkPolicy.UPDATE,
+                PeriodicWorkRequestBuilder<CheckWorker>(hours.toLong(), TimeUnit.HOURS)
                     .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build())
         }
     }

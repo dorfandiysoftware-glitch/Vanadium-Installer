@@ -17,7 +17,9 @@ enum class Comp(val id: String, val title: String, val pkg: String, val path: St
     BROWSER("browser", "Vanadium Browser", "app.vanadium.browser", "prebuilt/arm64/VanadiumBrowser.apk",
         "The hardened Chromium browser from GrapheneOS."),
     CONFIG("config", "Vanadium Config", "app.vanadium.config", "prebuilt/VanadiumConfig.apk",
-        "Filter lists and settings used by Vanadium."),
+        "Filter lists and settings used by Vanadium (a helper package, it has no screen)."),
+    WEBVIEW("webview", "Vanadium WebView", "app.vanadium.webview", "prebuilt/arm64-multilib/VanadiumWebView.apk",
+        "The WebView engine. It installs as a normal app; Android decides whether it can be selected as the system WebView."),
 }
 
 class Remote(val commit: String, val date: String, val title: String)
@@ -75,6 +77,15 @@ object Vanadium {
     }
 
     fun install(ctx: Context, c: Comp, r: Remote, file: File) {
+        if (ShizukuHelper.usable) {
+            val err = ShizukuHelper.install(file)
+            if (err == null) {
+                storeCommit(ctx, c, r.commit)
+                Bus.message.value = "${c.title} installed (Shizuku)"
+            } else Bus.message.value = err
+            Bus.tick.value++
+            return
+        }
         val pi = ctx.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         params.setAppPackageName(c.pkg)
@@ -101,4 +112,10 @@ object Vanadium {
     var Context.notifyUpdates: Boolean
         get() = sp(this).getBoolean("notify", false)
         set(v) = sp(this).edit().putBoolean("notify", v).apply()
+    var Context.checkHours: Int
+        get() = sp(this).getInt("hours", 24)
+        set(v) = sp(this).edit().putInt("hours", v).apply()
+    var Context.expressive: Boolean
+        get() = sp(this).getBoolean("expressive", true)
+        set(v) = sp(this).edit().putBoolean("expressive", v).apply()
 }
